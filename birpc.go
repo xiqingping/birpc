@@ -22,6 +22,12 @@ import (
 	"net/rpc"
 	"reflect"
 	"sync"
+	"time"
+	"sync/atomic"
+)
+
+var (
+	pingPeriod = 10 * time.Second
 )
 
 type function struct {
@@ -133,6 +139,9 @@ type Codec interface {
 	UnmarshalArgs(msg *Message, args interface{}) error
 	UnmarshalResult(msg *Message, result interface{}) error
 
+	Ping() error
+	SetPongHandler(func(string) error)
+
 	io.Closer
 }
 
@@ -164,6 +173,9 @@ type Endpoint struct {
 		registry *Registry
 		running  sync.WaitGroup
 	}
+
+	lastPongTimestamp int64	// atomic
+	stopFlag          int32	// atomic
 }
 
 // Dummy registry with no functions registered.
@@ -181,6 +193,7 @@ func NewEndpoint(codec Codec, registry *Registry) *Endpoint {
 	e.codec = codec
 	e.server.registry = registry
 	e.client.pending = make(map[uint64]*rpc.Call)
+	e.lastPongTimestamp = time.Now().Unix()
 	return e
 }
 
@@ -244,6 +257,29 @@ func (e *Endpoint) serve_response(msg *Message) error {
 func (e *Endpoint) Serve() error {
 	defer e.codec.Close()
 	defer e.server.running.Wait()
+	go func() {
+		e.codec.SetPongHandler(
+			func(string) error {
+				now := time.Now().Unix()
+				atomic.StoreInt64(&e.lastPongTimestamp, now)
+				return nil
+			})
+		ticker := time.NewTicker(pingPeriod)
+		for {
+			select {
+			case <-ticker.C:
+				if err := e.codec.Ping(); err != nil {
+					e.codec.Close()
+					return
+				}
+				lastPongTimestamp := atomic.LoadInt64(&e.lastPongTimestamp)
+				if lastPongTimestamp + 3 * int64(pingPeriod.Seconds()) < time.Now().Unix() {
+					e.codec.Close()
+					return
+				}
+			}
+		}
+	}()
 	for {
 		var msg Message
 		err := e.codec.ReadMessage(&msg)
