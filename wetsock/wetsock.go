@@ -48,6 +48,21 @@ func (c *codec) ReadMessage(msg *birpc.Message) error {
 	return nil
 }
 
+func (c *codec) Ping() error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	if err := c.WS.WriteMessage(websocket.PingMessage, []byte{}); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *codec) SetPongHandler(handler func(string) error) {
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
+	c.WS.SetPongHandler(handler)
+}
+
 func (c *codec) WriteMessage(msg *birpc.Message) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()

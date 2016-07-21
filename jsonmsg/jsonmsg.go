@@ -71,6 +71,12 @@ func (c *codec) UnmarshalResult(msg *birpc.Message, result interface{}) error {
 	return err
 }
 
+func (c *codec) Ping() error {
+	return nil
+}
+
+func (c *codec) SetPongHandler(handler func(string) error) {}
+
 func NewCodec(conn io.ReadWriteCloser) *codec {
 	c := &codec{
 		dec:    json.NewDecoder(conn),
