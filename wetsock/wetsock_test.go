@@ -2,7 +2,6 @@ package wetsock_test
 
 import (
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
@@ -11,8 +10,12 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/tv42/birpc"
-	"github.com/tv42/birpc/oneshotlisten"
+	"github.com/tv42/birpc/stoppablelisten"
 	"github.com/tv42/birpc/wetsock"
+	"sync"
+	"strings"
+	"io"
+	"time"
 )
 
 func MustParseURL(u string) *url.URL {
@@ -37,40 +40,55 @@ func hello(w http.ResponseWriter, req *http.Request) {
 	}
 	codec := wetsock.NewCodec(ws)
 
-	msg := birpc.Message{
-		ID:   42,
-		Func: "Greeting.Greet",
-		Args: struct{ Msg string }{"Hello, world"},
+	for i := 0; i < 10; i++ {
+		go func() {
+			msg := birpc.Message{
+				ID:   42,
+				Func: "Greeting.Greet",
+				Args: struct{ Msg string }{"Hello, world"},
+			}
+			if err := codec.WriteMessage(&msg); err != nil {
+				panic(fmt.Sprintf("wetsock send failed: %v", err))
+			}
+		}()
 	}
-	if err := codec.WriteMessage(&msg); err != nil {
-		panic(fmt.Sprintf("wetsock send failed: %v", err))
-	}
+	time.Sleep(2 * time.Second)
 	codec.Close()
 }
 
 type nothing struct{}
 
 func TestSend(t *testing.T) {
-	// just pipe would deadlock the server and client; we rely on
-	// buffered io to be enough to allow them to work
-	pipe_client, pipe_server := net.Pipe()
+	tcpListener, err := net.Listen("tcp", "localhost:8088")
+	if err != nil {
+		t.Fatalf("fail to listen, %v", err)
+	}
+	stoppableListener, err := stoppablelisten.New(tcpListener)
+	if err != nil {
+		t.Fatalf("fail to new stoppablelistener, %v", err)
+	}
 
 	server := http.Server{
 		Handler: http.HandlerFunc(hello),
 	}
 
-	fakeListener := oneshotlisten.New(pipe_server)
-	done := make(chan error)
+	var wg sync.WaitGroup
+	wg.Add(1)
 	go func() {
-		defer close(done)
-		done <- server.Serve(fakeListener)
+		defer wg.Done()
+		server.Serve(stoppableListener)
 	}()
 
+	clientConn, err := net.Dial("tcp", "localhost:8088")
+	if err != nil {
+		t.Fatalf("can't not connect to websocket server, %v", err)
+	}
+
 	ws, _, err := websocket.NewClient(
-		pipe_client,
-		MustParseURL("http://fakeserver.test/bloop"),
+		clientConn,
+		MustParseURL("ws://fakeserver.test/bloop"),
 		http.Header{
-			"Origin": {"http://fakeserver.test/blarg"},
+			"Origin": {"ws://fakeserver.test/blarg"},
 		},
 		4096,
 		4096,
@@ -78,41 +96,42 @@ func TestSend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("websocket client failed to start: %v", err)
 	}
-	var msg birpc.Message
-	err = ws.ReadJSON(&msg)
-	if err != nil {
-		t.Fatalf("websocket client receive error: %v", err)
-	}
-	if msg.ID != 42 {
-		t.Errorf("unexpected seqno: %#v", msg)
-	}
-	if msg.Func != "Greeting.Greet" {
-		t.Errorf("unexpected func: %#v", msg)
-	}
-	if msg.Args == nil {
-		t.Errorf("unexpected args: %#v", msg)
-	}
-	if msg.Result != nil {
-		t.Errorf("unexpected result: %#v", msg)
-	}
-	if msg.Error != nil {
-		t.Errorf("unexpected error: %#v", msg)
-	}
 
-	switch greeting := msg.Args.(type) {
-	case map[string]interface{}:
-		if greeting["Msg"] != "Hello, world" {
-			t.Errorf("unexpected greeting: %#v", greeting)
+	for i := 0; i < 10; i++ {
+		var msg birpc.Message
+		err = ws.ReadJSON(&msg)
+		if err != nil {
+			t.Fatalf("websocket client receive error: %v", err)
+		}
+		if msg.ID != 42 {
+			t.Errorf("unexpected seqno: %#v", msg)
+		}
+		if msg.Func != "Greeting.Greet" {
+			t.Errorf("unexpected func: %#v", msg)
+		}
+		if msg.Args == nil {
+			t.Errorf("unexpected args: %#v", msg)
+		}
+		if msg.Result != nil {
+			t.Errorf("unexpected result: %#v", msg)
+		}
+		if msg.Error != nil {
+			t.Errorf("unexpected error: %#v", msg)
 		}
 
-	default:
-		t.Fatalf("unexpected args type: %T: %v", msg.Args, msg.Args)
+		switch greeting := msg.Args.(type) {
+		case map[string]interface{}:
+			if greeting["Msg"] != "Hello, world" {
+				t.Errorf("unexpected greeting: %#v", greeting)
+			}
+
+		default:
+			t.Fatalf("unexpected args type: %T: %v", msg.Args, msg.Args)
+		}
 	}
 
-	err = <-done
-	if err != nil && err != io.EOF {
-		t.Fatalf("http server failed: %v", err)
-	}
+	stoppableListener.Stop()
+	wg.Wait()
 }
 
 type Address struct {
@@ -126,11 +145,19 @@ func (_ Peer) Address(request *nothing, reply *Address, ws *websocket.Conn) erro
 	return nil
 }
 
+
 func TestWSArg(t *testing.T) {
 	registry := birpc.NewRegistry()
 	registry.RegisterService(Peer{})
 
-	pipe_client, pipe_server := net.Pipe()
+	tcpListener, err := net.Listen("tcp", "localhost:8088")
+	if err != nil {
+		t.Fatalf("fail to listen, %v", err)
+	}
+	stoppableListener, err := stoppablelisten.New(tcpListener)
+	if err != nil {
+		t.Fatalf("fail to new stoppablelistener, %v", err)
+	}
 
 	serve := func(w http.ResponseWriter, req *http.Request) {
 		upgrader := websocket.Upgrader{}
@@ -144,26 +171,36 @@ func TestWSArg(t *testing.T) {
 			log.Printf("websocket error from %v: %v", ws.RemoteAddr(), err)
 		}
 	}
+
 	server := http.Server{
 		Handler: http.HandlerFunc(serve),
 	}
 
-	fakeListener := oneshotlisten.New(pipe_server)
-	done := make(chan error)
+	var wg sync.WaitGroup
+	wg.Add(1)
 	go func() {
-		defer close(done)
-		done <- server.Serve(fakeListener)
+		defer wg.Done()
+		server.Serve(stoppableListener)
 	}()
 
+	clientConn, err := net.Dial("tcp", "localhost:8088")
+	if err != nil {
+		t.Fatalf("can't not connect to websocket server, %v", err)
+	}
+
 	ws, _, err := websocket.NewClient(
-		pipe_client,
-		MustParseURL("http://fakeserver.test/bloop"),
+		clientConn,
+		MustParseURL("ws://fakeserver.test/bloop"),
 		http.Header{
-			"Origin": {"http://fakeserver.test/blarg"},
+			"Origin": {"ws://fakeserver.test/blarg"},
 		},
 		4096,
 		4096,
 	)
+	if err != nil {
+		t.Fatalf("websocket client failed to start: %v", err)
+	}
+
 	request := birpc.Message{
 		ID:   13,
 		Func: "Peer.Address",
@@ -198,7 +235,7 @@ func TestWSArg(t *testing.T) {
 	switch result := msg.Result.(type) {
 	case map[string]interface{}:
 		// this is what net.Pipe gives us
-		if result["Address"] != "pipe" {
+		if strings.Split(result["Address"].(string), ":")[0] != "127.0.0.1" {
 			t.Errorf("unexpected result: %#v", result)
 		}
 
@@ -206,10 +243,8 @@ func TestWSArg(t *testing.T) {
 		t.Fatalf("unexpected result type: %T: %v", msg.Result, msg.Result)
 	}
 
-	err = <-done
-	if err != nil && err != io.EOF {
-		t.Fatalf("http server failed: %v", err)
-	}
+	stoppableListener.Stop()
+	wg.Wait()
 }
 
 func helloNoArgs(ws *websocket.Conn) {
@@ -250,6 +285,7 @@ func (_ WordLength) Len(request *Request, reply *Reply) error {
 
 const PALINDROME = `{"id": "42", "fn": "WordLength.Len", "args": {"Word": "saippuakauppias"}}` + "\n"
 
+
 func TestServerNoArgs(t *testing.T) {
 	registry := birpc.NewRegistry()
 	registry.RegisterService(WordLength{})
@@ -266,25 +302,35 @@ func TestServerNoArgs(t *testing.T) {
 			t.Fatalf("birpc Serve failed: %v", err)
 		}
 	}
-
-	pipe_client, pipe_server := net.Pipe()
+	tcpListener, err := net.Listen("tcp", "localhost:8088")
+	if err != nil {
+		t.Fatalf("fail to listen, %v", err)
+	}
+	stoppableListener, err := stoppablelisten.New(tcpListener)
+	if err != nil {
+		t.Fatalf("fail to new stoppablelistener, %v", err)
+	}
 
 	server := http.Server{
 		Handler: http.HandlerFunc(wordlen),
 	}
 
-	fakeListener := oneshotlisten.New(pipe_server)
-	done := make(chan error)
+	var wg sync.WaitGroup
+	wg.Add(1)
 	go func() {
-		defer close(done)
-		done <- server.Serve(fakeListener)
+		defer wg.Done()
+		server.Serve(stoppableListener)
 	}()
 
+	clientConn, err := net.Dial("tcp", "localhost:8088")
+	if err != nil {
+		t.Fatalf("can't not connect to websocket server, %v", err)
+	}
 	ws, _, err := websocket.NewClient(
-		pipe_client,
-		MustParseURL("http://fakeserver.test/bloop"),
+		clientConn,
+		MustParseURL("ws://fakeserver.test/bloop"),
 		http.Header{
-			"Origin": {"http://fakeserver.test/blarg"},
+			"Origin": {"ws://fakeserver.test/blarg"},
 		},
 		4096,
 		4096,
@@ -333,8 +379,6 @@ func TestServerNoArgs(t *testing.T) {
 		t.Fatalf("unexpected result type: %T: %v", msg.Result, msg.Result)
 	}
 
-	err = <-done
-	if err != nil && err != io.EOF {
-		t.Fatalf("http server failed: %v", err)
-	}
+	stoppableListener.Stop()
+	wg.Wait()
 }
