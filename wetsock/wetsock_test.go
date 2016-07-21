@@ -15,6 +15,7 @@ import (
 	"sync"
 	"strings"
 	"io"
+	"time"
 )
 
 func MustParseURL(u string) *url.URL {
@@ -39,14 +40,19 @@ func hello(w http.ResponseWriter, req *http.Request) {
 	}
 	codec := wetsock.NewCodec(ws)
 
-	msg := birpc.Message{
-		ID:   42,
-		Func: "Greeting.Greet",
-		Args: struct{ Msg string }{"Hello, world"},
+	for i := 0; i < 10; i++ {
+		go func() {
+			msg := birpc.Message{
+				ID:   42,
+				Func: "Greeting.Greet",
+				Args: struct{ Msg string }{"Hello, world"},
+			}
+			if err := codec.WriteMessage(&msg); err != nil {
+				panic(fmt.Sprintf("wetsock send failed: %v", err))
+			}
+		}()
 	}
-	if err := codec.WriteMessage(&msg); err != nil {
-		panic(fmt.Sprintf("wetsock send failed: %v", err))
-	}
+	time.Sleep(2 * time.Second)
 	codec.Close()
 }
 
@@ -90,36 +96,38 @@ func TestSend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("websocket client failed to start: %v", err)
 	}
-	
-	var msg birpc.Message
-	err = ws.ReadJSON(&msg)
-	if err != nil {
-		t.Fatalf("websocket client receive error: %v", err)
-	}
-	if msg.ID != 42 {
-		t.Errorf("unexpected seqno: %#v", msg)
-	}
-	if msg.Func != "Greeting.Greet" {
-		t.Errorf("unexpected func: %#v", msg)
-	}
-	if msg.Args == nil {
-		t.Errorf("unexpected args: %#v", msg)
-	}
-	if msg.Result != nil {
-		t.Errorf("unexpected result: %#v", msg)
-	}
-	if msg.Error != nil {
-		t.Errorf("unexpected error: %#v", msg)
-	}
 
-	switch greeting := msg.Args.(type) {
-	case map[string]interface{}:
-		if greeting["Msg"] != "Hello, world" {
-			t.Errorf("unexpected greeting: %#v", greeting)
+	for i := 0; i < 10; i++ {
+		var msg birpc.Message
+		err = ws.ReadJSON(&msg)
+		if err != nil {
+			t.Fatalf("websocket client receive error: %v", err)
+		}
+		if msg.ID != 42 {
+			t.Errorf("unexpected seqno: %#v", msg)
+		}
+		if msg.Func != "Greeting.Greet" {
+			t.Errorf("unexpected func: %#v", msg)
+		}
+		if msg.Args == nil {
+			t.Errorf("unexpected args: %#v", msg)
+		}
+		if msg.Result != nil {
+			t.Errorf("unexpected result: %#v", msg)
+		}
+		if msg.Error != nil {
+			t.Errorf("unexpected error: %#v", msg)
 		}
 
-	default:
-		t.Fatalf("unexpected args type: %T: %v", msg.Args, msg.Args)
+		switch greeting := msg.Args.(type) {
+		case map[string]interface{}:
+			if greeting["Msg"] != "Hello, world" {
+				t.Errorf("unexpected greeting: %#v", greeting)
+			}
+
+		default:
+			t.Fatalf("unexpected args type: %T: %v", msg.Args, msg.Args)
+		}
 	}
 
 	stoppableListener.Stop()
