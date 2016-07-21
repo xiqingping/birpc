@@ -16,6 +16,7 @@
 package birpc
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -257,45 +258,65 @@ func (e *Endpoint) serve_response(msg *Message) error {
 func (e *Endpoint) Serve() error {
 	defer e.codec.Close()
 	defer e.server.running.Wait()
+
+	pingpongError := make(chan error)
 	go func() {
-		e.codec.SetPongHandler(
-			func(string) error {
-				now := time.Now().Unix()
-				atomic.StoreInt64(&e.lastPongTimestamp, now)
-				return nil
-			})
-		ticker := time.NewTicker(pingPeriod)
-		for {
-			select {
-			case <-ticker.C:
-				if err := e.codec.Ping(); err != nil {
-					e.codec.Close()
-					return
-				}
-				lastPongTimestamp := atomic.LoadInt64(&e.lastPongTimestamp)
-				if lastPongTimestamp + 3 * int64(pingPeriod.Seconds()) < time.Now().Unix() {
-					e.codec.Close()
-					return
+		pingpongError <-func() error {
+			e.codec.SetPongHandler(
+				func(string) error {
+					now := time.Now().Unix()
+					atomic.StoreInt64(&e.lastPongTimestamp, now)
+					return nil
+				})
+			ticker := time.NewTicker(pingPeriod)
+			for {
+				select {
+				case <-ticker.C:
+					if err := e.codec.Ping(); err != nil {
+						return errors.New("remote connection is closed.")
+					}
+					lastPongTimestamp := atomic.LoadInt64(&e.lastPongTimestamp)
+					if lastPongTimestamp + 2 * int64(pingPeriod.Seconds()) < time.Now().Unix() {
+						return errors.New("remote connection is timeout.")
+					}
 				}
 			}
-		}
+			return nil
+		}()
 	}()
-	for {
-		var msg Message
-		err := e.codec.ReadMessage(&msg)
-		if err != nil {
-			return err
-		}
 
-		if msg.Func != "" {
-			err = e.serve_request(&msg)
-		} else {
-			err = e.serve_response(&msg)
-		}
-		if err != nil {
+	readError := make(chan error)
+	go func() {
+		readError <-func() error {
+			for {
+				var msg Message
+				err := e.codec.ReadMessage(&msg)
+				if err != nil {
+					return err
+				}
+
+				if msg.Func != "" {
+					err = e.serve_request(&msg)
+				} else {
+					err = e.serve_response(&msg)
+				}
+				if err != nil {
+					return err
+				}
+			}
+			return nil
+		}()
+	}()
+
+	for {
+		select {
+		case err := <-pingpongError:
+			return err
+		case err := <-readError:
 			return err
 		}
 	}
+	return nil
 }
 
 func (e *Endpoint) send(msg *Message) error {
