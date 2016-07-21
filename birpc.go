@@ -176,7 +176,6 @@ type Endpoint struct {
 	}
 
 	lastPongTimestamp int64	// atomic
-	stopFlag          int32	// atomic
 }
 
 // Dummy registry with no functions registered.
