@@ -178,6 +178,7 @@ type Endpoint struct {
 	}
 
 	lastPongTimestamp int64 // atomic
+	seqID             uint64
 }
 
 // Dummy registry with no functions registered.
@@ -196,6 +197,7 @@ func NewEndpoint(codec Codec, registry *Registry) *Endpoint {
 	e.server.registry = registry
 	e.client.pending = make(map[uint64]*rpc.Call)
 	e.lastPongTimestamp = time.Now().Unix()
+	e.seqID = 0
 	return e
 }
 
@@ -295,6 +297,12 @@ func (e *Endpoint) Serve() error {
 				if err != nil {
 					return err
 				}
+
+				// received old message, skip it.
+				if msg.ID <= e.seqID {
+					continue
+				}
+				e.seqID = msg.ID
 
 				if msg.Func != "" {
 					err = e.serve_request(&msg)
