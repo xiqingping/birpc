@@ -4,7 +4,7 @@ machine:
 
 checkout:
   post:
-    - mkdir /usr/local/go/src/github.com/tv42
+    - mkdir -p /usr/local/go/src/github.com/tv42
     - ln -s `pwd` /usr/local/go/src/github.com/tv42/birpc
 
 test:
