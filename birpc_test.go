@@ -10,7 +10,6 @@ import (
 
 	"github.com/tv42/birpc"
 	"github.com/tv42/birpc/jsonmsg"
-	"time"
 )
 
 // Generic reply parsing
@@ -83,28 +82,6 @@ func TestServerSimple(t *testing.T) {
 
 	err := <-server_err
 	if err != io.EOF {
-		t.Fatalf("unexpected error from ServeCodec: %v", err)
-	}
-}
-
-func TestPingPongTimeout(t *testing.T) {
-	c, s := net.Pipe()
-	defer c.Close()
-	registry := makeRegistry()
-	server := birpc.NewEndpoint(jsonmsg.NewCodec(s), registry)
-	server_err := make(chan error)
-	go func() {
-		server_err <- server.Serve()
-	}()
-
-	go func() {
-		// TODO(ccl0326@163.com): Reduce sleep time.
-		time.Sleep(31 * time.Second)
-		c.Close()
-	}()
-
-	err := <-server_err
-	if err.Error() != "remote connection is timeout." {
 		t.Fatalf("unexpected error from ServeCodec: %v", err)
 	}
 }

@@ -14,7 +14,7 @@ type codec struct {
 	WS *websocket.Conn
 	// https://godoc.org/github.com/gorilla/websocket#hdr-Concurrency
 	// As above document.Only one concurrent reader and one concurrent writer are allowed.
-	readMu sync.Mutex
+	readMu  sync.Mutex
 	writeMu sync.Mutex
 }
 
@@ -51,10 +51,21 @@ func (c *codec) ReadMessage(msg *birpc.Message) error {
 func (c *codec) Ping() error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
-	if err := c.WS.WriteMessage(websocket.PingMessage, []byte{}); err != nil {
-		return err
-	}
-	return nil
+
+	return c.WS.WriteMessage(websocket.PingMessage, []byte{})
+}
+
+func (c *codec) Pong() error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+
+	return c.WS.WriteMessage(websocket.PongMessage, []byte{})
+}
+
+func (c *codec) SetPingHandler(handler func(string) error) {
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
+	c.WS.SetPingHandler(handler)
 }
 
 func (c *codec) SetPongHandler(handler func(string) error) {

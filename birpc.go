@@ -23,8 +23,8 @@ import (
 	"net/rpc"
 	"reflect"
 	"sync"
-	"time"
 	"sync/atomic"
+	"time"
 )
 
 var (
@@ -141,6 +141,8 @@ type Codec interface {
 	UnmarshalResult(msg *Message, result interface{}) error
 
 	Ping() error
+	Pong() error
+	SetPingHandler(func(string) error)
 	SetPongHandler(func(string) error)
 
 	io.Closer
@@ -175,7 +177,7 @@ type Endpoint struct {
 		running  sync.WaitGroup
 	}
 
-	lastPongTimestamp int64	// atomic
+	lastPongTimestamp int64 // atomic
 }
 
 // Dummy registry with no functions registered.
@@ -258,26 +260,26 @@ func (e *Endpoint) Serve() error {
 	defer e.codec.Close()
 	defer e.server.running.Wait()
 
+	// avoid data race, setup before ReadMessage, use default ping handler.
+	e.codec.SetPongHandler(
+		func(string) error {
+			now := time.Now().Unix()
+			atomic.StoreInt64(&e.lastPongTimestamp, now)
+			return nil
+		})
+
 	pingpongError := make(chan error)
 	go func() {
-		pingpongError <-func() error {
-			e.codec.SetPongHandler(
-				func(string) error {
-					now := time.Now().Unix()
-					atomic.StoreInt64(&e.lastPongTimestamp, now)
-					return nil
-				})
+		pingpongError <- func() error {
 			ticker := time.NewTicker(pingPeriod)
-			for {
-				select {
-				case <-ticker.C:
-					if err := e.codec.Ping(); err != nil {
-						return errors.New("remote connection is closed.")
-					}
-					lastPongTimestamp := atomic.LoadInt64(&e.lastPongTimestamp)
-					if lastPongTimestamp + 2 * int64(pingPeriod.Seconds()) < time.Now().Unix() {
-						return errors.New("remote connection is timeout.")
-					}
+			defer ticker.Stop()
+			for range ticker.C {
+				if err := e.codec.Ping(); err != nil {
+					return errors.New("remote connection is closed.")
+				}
+				lastPongTimestamp := atomic.LoadInt64(&e.lastPongTimestamp)
+				if lastPongTimestamp+2*int64(pingPeriod.Seconds()) < time.Now().Unix() {
+					return errors.New("remote connection is timeout.")
 				}
 			}
 			return nil
@@ -286,7 +288,7 @@ func (e *Endpoint) Serve() error {
 
 	readError := make(chan error)
 	go func() {
-		readError <-func() error {
+		readError <- func() error {
 			for {
 				var msg Message
 				err := e.codec.ReadMessage(&msg)
@@ -459,4 +461,8 @@ func (e *Endpoint) Go(function string, args interface{}, reply interface{}, done
 func (e *Endpoint) Call(function string, args interface{}, reply interface{}) error {
 	call := <-e.Go(function, args, reply, make(chan *rpc.Call, 1)).Done
 	return call.Error
+}
+
+func (e *Endpoint) SetPingHandler(handler func(string) error) {
+	e.codec.SetPingHandler(handler)
 }

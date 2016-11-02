@@ -145,6 +145,188 @@ func (_ Peer) Address(request *nothing, reply *Address, ws *websocket.Conn) erro
 	return nil
 }
 
+func TestPing(t *testing.T) {
+	registry := birpc.NewRegistry()
+	registry.RegisterService(Peer{})
+
+	tcpListener, err := net.Listen("tcp", "localhost:8088")
+	if err != nil {
+		t.Fatalf("fail to listen, %v", err)
+	}
+	stoppableListener, err := stoppablelisten.New(tcpListener)
+	if err != nil {
+		t.Fatalf("fail to new stoppablelistener, %v", err)
+	}
+
+
+	serve := func(w http.ResponseWriter, req *http.Request) {
+		upgrader := websocket.Upgrader{}
+		ws, err := upgrader.Upgrade(w, req, nil)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		endpoint := wetsock.NewEndpoint(registry, ws)
+
+		if err := endpoint.Serve(); err != nil {
+			log.Printf("websocket error from %v: %v", ws.RemoteAddr(), err)
+		}
+	}
+
+	server := http.Server{
+		Handler: http.HandlerFunc(serve),
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		server.Serve(stoppableListener)
+	}()
+
+	time.Sleep(time.Second * 1)
+	clientConn, err := net.Dial("tcp", "localhost:8088")
+
+	if err != nil {
+		t.Fatalf("can't not connect to websocket server, %v", err)
+	}
+
+	ws, _, err := websocket.NewClient(
+		clientConn,
+		MustParseURL("ws://fakeserver.test/bloop"),
+		http.Header{
+			"Origin": {"ws://fakeserver.test/blarg"},
+		},
+		4096,
+		4096,
+	)
+
+	if err != nil {
+		t.Fatalf("websocket client failed to start: %v", err)
+	}
+
+
+	pingTimes := 0
+	ws.SetPingHandler(func(string) error {
+		pingTimes++
+		ws.WriteMessage(websocket.PongMessage, []byte{})
+		return nil
+	})
+
+
+	go func() {
+		for {
+			_, _, err := ws.ReadMessage()
+			if err != nil {
+				break
+			}
+		}
+	}()
+
+	time.Sleep(31 * time.Second)
+
+	if pingTimes != 3 {
+		t.Fatalf("expected ping times 3, but %d", pingTimes)
+	}
+
+	ws.Close()
+	stoppableListener.Stop()
+	wg.Wait()
+}
+
+func TestPingTimeout(t *testing.T) {
+	registry := birpc.NewRegistry()
+	registry.RegisterService(Peer{})
+
+	tcpListener, err := net.Listen("tcp", "localhost:8088")
+	if err != nil {
+		t.Fatalf("fail to listen, %v", err)
+	}
+	stoppableListener, err := stoppablelisten.New(tcpListener)
+	if err != nil {
+		t.Fatalf("fail to new stoppablelistener, %v", err)
+	}
+
+
+	var serveError error
+
+	serve := func(w http.ResponseWriter, req *http.Request) {
+		upgrader := websocket.Upgrader{}
+		ws, err := upgrader.Upgrade(w, req, nil)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		endpoint := wetsock.NewEndpoint(registry, ws)
+
+		if err := endpoint.Serve(); err != nil {
+			serveError = err
+			log.Printf("websocket error from %v: %v", ws.RemoteAddr(), err)
+		}
+	}
+
+	server := http.Server{
+		Handler: http.HandlerFunc(serve),
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		server.Serve(stoppableListener)
+	}()
+
+	time.Sleep(time.Second * 1)
+	clientConn, err := net.Dial("tcp", "localhost:8088")
+
+	if err != nil {
+		t.Fatalf("can't not connect to websocket server, %v", err)
+	}
+
+	ws, _, err := websocket.NewClient(
+		clientConn,
+		MustParseURL("ws://fakeserver.test/bloop"),
+		http.Header{
+			"Origin": {"ws://fakeserver.test/blarg"},
+		},
+		4096,
+		4096,
+	)
+
+	if err != nil {
+		t.Fatalf("websocket client failed to start: %v", err)
+	}
+
+	// don't send pong message.
+	pingTimes := 0
+	ws.SetPingHandler(func(string) error {
+		pingTimes++
+		return nil
+	})
+
+
+	go func() {
+		for {
+			_, _, err := ws.ReadMessage()
+			if err != nil {
+				break
+			}
+		}
+	}()
+
+	time.Sleep(31 * time.Second)
+
+	if pingTimes != 3 {
+		t.Fatalf("expected ping times 3, but %d", pingTimes)
+	}
+	if serveError.Error() != "remote connection is timeout." {
+		t.Fatalf("unexpected error from ServeCodec: %v", serveError)
+	}
+
+	ws.Close()
+	stoppableListener.Stop()
+	wg.Wait()
+}
 
 func TestWSArg(t *testing.T) {
 	registry := birpc.NewRegistry()
