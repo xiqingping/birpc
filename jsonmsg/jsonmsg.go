@@ -75,6 +75,11 @@ func (c *codec) Ping() error {
 	return nil
 }
 
+func (c *codec) Pong() error {
+	return nil
+}
+
+func (c *codec) SetPingHandler(handler func(string) error) {}
 func (c *codec) SetPongHandler(handler func(string) error) {}
 
 func NewCodec(conn io.ReadWriteCloser) *codec {
