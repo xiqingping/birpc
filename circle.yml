@@ -1,0 +1,12 @@
+machine:
+  services:
+    - docker
+
+checkout:
+  post:
+    - mkdir -p /usr/local/go/src/github.com/tv42
+    - ln -s `pwd` /usr/local/go/src/github.com/tv42/birpc
+
+test:
+  override:
+    - go test github.com/tv42/birpc/...

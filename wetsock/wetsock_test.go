@@ -316,8 +316,8 @@ func TestPingTimeout(t *testing.T) {
 
 	time.Sleep(31 * time.Second)
 
-	if pingTimes != 3 {
-		t.Fatalf("expected ping times 3, but %d", pingTimes)
+	if pingTimes != 2 {
+		t.Fatalf("expected ping times 2, but %d", pingTimes)
 	}
 	if serveError.Error() != "remote connection is timeout." {
 		t.Fatalf("unexpected error from ServeCodec: %v", serveError)

@@ -274,12 +274,12 @@ func (e *Endpoint) Serve() error {
 			ticker := time.NewTicker(pingPeriod)
 			defer ticker.Stop()
 			for range ticker.C {
-				if err := e.codec.Ping(); err != nil {
-					return errors.New("remote connection is closed.")
-				}
 				lastPongTimestamp := atomic.LoadInt64(&e.lastPongTimestamp)
 				if lastPongTimestamp+2*int64(pingPeriod.Seconds()) < time.Now().Unix() {
 					return errors.New("remote connection is timeout.")
+				}
+				if err := e.codec.Ping(); err != nil {
+					return errors.New("remote connection is closed.")
 				}
 			}
 			return nil
