@@ -86,6 +86,45 @@ func TestServerSimple(t *testing.T) {
 	}
 }
 
+func TestDupMessage(t *testing.T) {
+	c, s := net.Pipe()
+	defer c.Close()
+	registry := makeRegistry()
+	server := birpc.NewEndpoint(jsonmsg.NewCodec(s), registry)
+	server_err := make(chan error)
+	go func() {
+		server_err <- server.Serve()
+	}()
+
+	io.WriteString(c, PALINDROME)
+
+	var reply WordLength_LowLevelReply
+	dec := json.NewDecoder(c)
+	if err := dec.Decode(&reply); err != nil && err != io.EOF {
+		t.Fatalf("decode failed: %s", err)
+	}
+	t.Logf("reply msg: %#v", reply)
+	if reply.Error != nil {
+		t.Fatalf("unexpected error response: %v", reply.Error)
+	}
+	if reply.Result.Length != 15 {
+		t.Fatalf("got wrong answer: %v", reply.Result.Length)
+	}
+
+	// dup message, no response
+	io.WriteString(c, PALINDROME)
+	if err := dec.Decode(&reply); err != io.EOF {
+		t.Fatalf("decode failed: %s", err)
+	}
+
+	c.Close()
+
+	err := <-server_err
+	if err.Error() != "remote connection is timeout." {
+		t.Fatalf("unexpected error from ServeCodec: %v", err)
+	}
+}
+
 func TestClient(t *testing.T) {
 	c, s := net.Pipe()
 	defer c.Close()
