@@ -298,13 +298,12 @@ func (e *Endpoint) Serve() error {
 					return err
 				}
 
-				// received old message, skip it.
-				if msg.ID <= e.seqID {
-					continue
-				}
-				e.seqID = msg.ID
-
 				if msg.Func != "" {
+					// received old message, skip it.
+					if msg.ID <= e.seqID {
+						continue
+					}
+					e.seqID = msg.ID
 					err = e.serve_request(&msg)
 				} else {
 					err = e.serve_response(&msg)
