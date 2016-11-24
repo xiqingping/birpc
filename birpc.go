@@ -262,7 +262,11 @@ func (e *Endpoint) Serve() error {
 	defer e.codec.Close()
 	defer e.server.running.Wait()
 
-	// avoid data race, setup before ReadMessage, use default ping handler.
+	// avoid data race, setup before ReadMessage
+	e.codec.SetPingHandler(
+		func(string) error {
+			return e.codec.Pong()
+		})
 	e.codec.SetPongHandler(
 		func(string) error {
 			now := time.Now().Unix()
