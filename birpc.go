@@ -274,7 +274,7 @@ func (e *Endpoint) Serve() error {
 			return nil
 		})
 
-	pingpongError := make(chan error)
+	pingpongError := make(chan error, 1)
 	go func() {
 		pingpongError <- func() error {
 			ticker := time.NewTicker(pingPeriod)
