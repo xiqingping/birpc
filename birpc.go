@@ -16,6 +16,7 @@
 package birpc
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -472,6 +473,22 @@ func (e *Endpoint) Go(function string, args interface{}, reply interface{}, done
 func (e *Endpoint) Call(function string, args interface{}, reply interface{}) error {
 	call := <-e.Go(function, args, reply, make(chan *rpc.Call, 1)).Done
 	return call.Error
+}
+
+// Call invokes the named function, waits for it to complete or timeout, and
+// returns its error status. See net/rpc Client.Call
+func (e *Endpoint) CallWithDeadline(function string, args interface{}, reply interface{}, t time.Time) error {
+	ctx, cancel := context.WithDeadline(context.Background(), t)
+	defer cancel()
+
+	callChan := e.Go(function, args, reply, make(chan *rpc.Call, 1)).Done
+
+	select {
+	case <-ctx.Done():
+		return errors.New("birpc: call timeout, dont resend")
+	case call := <-callChan:
+		return call.Error
+	}
 }
 
 func (e *Endpoint) SetPingHandler(handler func(string) error) {
