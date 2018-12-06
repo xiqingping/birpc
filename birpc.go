@@ -89,7 +89,7 @@ func getRPCMethodsOfType(object interface{}) ([]*function, error) {
 	return fns, nil
 }
 
-// RegisterService registers all exported methods of service, allowing
+// RegisterServiceWithName registers all exported methods of service, allowing
 // them to be called remotely. The name of the methods will be of the
 // format SERVICE.METHOD, where SERVICE is the type name or the object
 // passed in, and METHOD is the name of each method.
@@ -104,14 +104,14 @@ func getRPCMethodsOfType(object interface{}) ([]*function, error) {
 // types are known to birpc and the codec in use.
 //
 // The methods should have return type error.
-func (r *Registry) RegisterService(object interface{}) {
+func (r *Registry) RegisterServiceWithName(object interface{}, serviceName string) error {
 	methods, err := getRPCMethodsOfType(object)
 	if err != nil {
-		// programmer error
-		panic(err)
+		return err
 	}
-
-	serviceName := reflect.Indirect(reflect.ValueOf(object)).Type().Name()
+	if serviceName == "" {
+		serviceName = reflect.Indirect(reflect.ValueOf(object)).Type().Name()
+	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -120,6 +120,12 @@ func (r *Registry) RegisterService(object interface{}) {
 		name := serviceName + "." + fn.method.Name
 		r.functions[name] = fn
 	}
+	return nil
+}
+
+// RegisterService the same as RegisterServiceWithName, but use the TYPE NAME of the object.
+func (r *Registry) RegisterService(object interface{}) error {
+	return r.RegisterServiceWithName(object, "")
 }
 
 // NewRegistry creates a new Registry.
@@ -203,6 +209,19 @@ func NewEndpoint(codec Codec, registry *Registry) *Endpoint {
 }
 
 func (e *Endpoint) serve_request(msg *Message) error {
+	if msg.Func == "getMethods" {
+		e.server.registry.mu.RLock()
+		funcs := make([]string, 0, len(e.server.registry.functions))
+		for k := range e.server.registry.functions {
+			funcs = append(funcs, k)
+		}
+		e.server.registry.mu.RUnlock()
+		msg.Error = nil
+		msg.Func = ""
+		msg.Args = nil
+		msg.Result = funcs
+		return e.send(msg)
+	}
 	e.server.registry.mu.RLock()
 	fn := e.server.registry.functions[msg.Func]
 	e.server.registry.mu.RUnlock()
@@ -304,11 +323,6 @@ func (e *Endpoint) Serve() error {
 				}
 
 				if msg.Func != "" {
-					// received old message, skip it.
-					if msg.ID <= e.seqID {
-						continue
-					}
-					e.seqID = msg.ID
 					err = e.serve_request(&msg)
 				} else {
 					err = e.serve_response(&msg)
@@ -481,16 +495,32 @@ func (e *Endpoint) CallWithDeadline(function string, args interface{}, reply int
 	ctx, cancel := context.WithDeadline(context.Background(), t)
 	defer cancel()
 
-	callChan := e.Go(function, args, reply, make(chan *rpc.Call, 1)).Done
+	call := e.Go(function, args, reply, make(chan *rpc.Call, 1))
 
 	select {
 	case <-ctx.Done():
+		e.client.mutex.Lock()
+		for k, v := range e.client.pending {
+			if v == call {
+				delete(e.client.pending, k)
+				break
+			}
+		}
+		e.client.mutex.Unlock()
 		return errors.New("birpc: call timeout, dont resend")
-	case call := <-callChan:
+	case call := <-call.Done:
 		return call.Error
 	}
 }
 
 func (e *Endpoint) SetPingHandler(handler func(string) error) {
 	e.codec.SetPingHandler(handler)
+}
+
+func (e *Endpoint) Eval(statement string, reply interface{}) error {
+	return e.Call("eval", statement, reply)
+}
+
+func (e *Endpoint) EvalWithDeadline(statement string, reply interface{}, t time.Time) error {
+	return e.CallWithDeadline("eval", statement, reply, t)
 }

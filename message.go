@@ -16,7 +16,7 @@ import (
 //   {"id":"1","error":{"msg":"Math is hard, let's go shopping"}}
 type Message struct {
 	// 0 or omitted for untagged request (untagged response is illegal).
-	ID uint64 `json:"id,string,omitempty"`
+	ID uint64 `json:"id"`
 
 	// Name of the function to call. If set, this is a request; if
 	// unset, this is a response.
